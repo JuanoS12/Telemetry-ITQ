@@ -1,0 +1,68 @@
+flowchart TB
+  %% ========= SENSORES =========
+  subgraph SENSORES["Sensores en vehículo"]
+    VR1["VR Rueda FL"]
+    VR2["VR Rueda FR"]
+    VR3["VR Rueda RL"]
+    VR4["VR Rueda RR"]
+    IMU["IMU MPU6050 (I2C) - CG"]
+    GPS["GPS (UART/I2C)"]
+    T_MCU["Temp Caja MCU (LM35/Termopar)"]
+    T_MOTOR["Temp Cerca Motor (LM35/Termopar)"]
+    BRK["Posición Pedal Freno (ADC)"]
+  end
+
+  %% ======= ACONDICIONAMIENTO =======
+  subgraph COND["Acondicionamiento (Op-Amps / Filtros / 0-3.3V)"]
+    VR_FE["Front-end VR x4 (Ganancia + Filtro + Limit)"]
+    TEMP_FE["Front-end Temp (INA/OP + Filtro + 0-3.3V)"]
+    BRK_FE["Acond. Freno (Filtro + 0-3.3V)"]
+  end
+
+  %% ========== MCU STM32 ==========
+  subgraph MCU["STM32F407VET6 (RTOS)"]
+    ACQ["Tarea: Adquisición (ADC, Timers, I2C, UART)"]
+    FILT["Tarea: Filtrado / Fusión (LPF/Kalman)"]
+    PKT["Tarea: Empaquetado + Colas"]
+    CAN_TX["Tarea: CAN Tx (prioridades)"]
+    WD["Tarea: Watchdog / Salud"]
+  end
+
+  %% ========== BUS CAN Y GATEWAY ==========
+  subgraph BUS["Backbone de Datos"]
+    CAN["Bus CAN"]
+  end
+
+  subgraph GW["ESP32 + MCP2515 (RTOS)"]
+    CAN_RX["Tarea: CAN Rx + Parsing"]
+    BUFF["Buffers/Queues"]
+    MQTT_PUB["Tarea: MQTT Publish"]
+    WIFI["Tarea: Wi-Fi / Reconexion"]
+  end
+
+  %% ========== ESTACIÓN BASE ==========
+  subgraph BASE["Computadora / Servidor"]
+    MQTT_BROKER["Broker MQTT"]
+    DASH["Dashboard + Logger"]
+  end
+
+  %% --------- ENLACES VERTICALES ---------
+  VR1 --> VR_FE
+  VR2 --> VR_FE
+  VR3 --> VR_FE
+  VR4 --> VR_FE
+  T_MCU --> TEMP_FE
+  T_MOTOR --> TEMP_FE
+  BRK --> BRK_FE
+
+  IMU --> ACQ
+  GPS --> ACQ
+
+  VR_FE --> ACQ
+  TEMP_FE --> ACQ
+  BRK_FE --> ACQ
+
+  ACQ --> FILT --> PKT --> CAN_TX --> CAN
+  CAN --> CAN_RX --> BUFF --> MQTT_PUB
+  WIFI --> MQTT_PUB
+  MQTT_PUB --> MQTT_BROKER --> DASH
