@@ -4,11 +4,13 @@
  *  Adquisición (VR/IMU/GPS/Temp/Freno) -> Procesamiento -> CAN Tx
  *  =========================== */
 
-#include "main.h"
-#include "cmsis_os.h"
+// Incluye cabeceras principales del proyecto y HAL
+#include "main.h"         // Debe contener definiciones de pines, prototipos y variables globales
+#include "cmsis_os.h"     // FreeRTOS API
 #include <string.h>
 #include <math.h>
-/* Periféricos generados por CubeMX */
+
+/* Periféricos generados por CubeMX (deben estar definidos en main.h) */
 I2C_HandleTypeDef hi2c1;
 UART_HandleTypeDef huart2;
 ADC_HandleTypeDef hadc1;
@@ -21,7 +23,7 @@ TIM_HandleTypeDef htim2;
    =========================== */
 #define FW_VERSION             "stm32f407_rtos_1.3.2"
 
-/* IDs CAN (Cap. 5) */
+/* IDs de mensajes CAN para cada sensor/dispositivo */
 #define CAN_ID_VR_FL           0x100
 #define CAN_ID_VR_FR           0x101
 #define CAN_ID_VR_RL           0x102
@@ -32,69 +34,69 @@ TIM_HandleTypeDef htim2;
 #define CAN_ID_BRAKE           0x140
 #define CAN_ID_HEALTH          0x150
 
-/* Tareas y frecuencias (aprox) */
+/* Frecuencias de muestreo para cada tarea */
 #define RATE_PROC_HZ           100U     // procesamiento/empacado
 #define RATE_IMU_HZ            200U
 #define RATE_GPS_HZ            10U
 #define RATE_TEMP_HZ           20U
 #define RATE_HEALTH_HZ         2U
 
-/* ADC canales: PC0=IN10 (temp box), PC1=IN11 (temp motor), PC2=IN12 (freno) */
+/* Número de canales ADC usados (temperatura y freno) */
 #define ADC_NUM_CH             3
 
-/* MPU6050 */
+/* Dirección y registros del MPU6050 (IMU) */
 #define MPU6050_ADDR           (0x68<<1)
 #define MPU6050_REG_PWR_MGMT1  0x6B
 #define MPU6050_REG_ACCEL_XOUT 0x3B
 
-/* Buffers globales (volatile cuando los toca ISR) */
-volatile uint32_t vr_ic_ticks[4] = {0};     // última captura por canal
-volatile uint32_t vr_period_ticks[4] = {0}; // periodo medido (ticks timer)
-volatile uint8_t  vr_new[4] = {0};
+/* Buffers globales para ISR y DMA (volatile) */
+volatile uint32_t vr_ic_ticks[4] = {0};     // Última captura por canal (ruedas)
+volatile uint32_t vr_period_ticks[4] = {0}; // Periodo medido (ticks timer)
+volatile uint8_t  vr_new[4] = {0};          // Flag de nueva medición
 
-volatile uint16_t adc_buf[ADC_NUM_CH];      // DMA circular
-volatile uint8_t  adc_new = 0;
+volatile uint16_t adc_buf[ADC_NUM_CH];      // Buffer ADC DMA circular
+volatile uint8_t  adc_new = 0;              // Flag de nueva conversión ADC
 
 #define GPS_RX_BUF_SZ 256
-volatile uint8_t gps_rx_byte;
-volatile char gps_rx_buf[GPS_RX_BUF_SZ];
-volatile uint16_t gps_rx_w = 0;
+volatile uint8_t gps_rx_byte;               // Byte recibido por UART
+volatile char gps_rx_buf[GPS_RX_BUF_SZ];    // Buffer de recepción GPS
+volatile uint16_t gps_rx_w = 0;             // Índice de escritura en buffer
 
-/* Estructuras de datos */
+/* Estructuras de datos para telemetría cruda y procesada */
 typedef struct {
-  float wheel_mps[4];  // FL, FR, RL, RR
-  float imu_ax, imu_ay, imu_az;
-  float imu_gx, imu_gy, imu_gz;
-  float gps_speed_mps;
-  double gps_lat, gps_lon;
-  float temp_box_c;
-  float temp_motor_c;
-  float brake_pos;     // 0..1
-  uint32_t ts_ms;
+  float wheel_mps[4];  // Velocidad de cada rueda (m/s)
+  float imu_ax, imu_ay, imu_az; // Aceleraciones IMU
+  float imu_gx, imu_gy, imu_gz; // Giroscopio IMU
+  float gps_speed_mps;          // Velocidad GPS (m/s)
+  double gps_lat, gps_lon;      // Latitud y longitud GPS
+  float temp_box_c;             // Temperatura caja
+  float temp_motor_c;           // Temperatura motor
+  float brake_pos;              // Posición freno (0..1)
+  uint32_t ts_ms;               // Timestamp en ms
 } TelemetryRaw_t;
 
 typedef struct {
   float wheel_mps[4];
-  float v_total_mps;
-  float ax, ay, az;
-  float gz;
+  float v_total_mps;            // Velocidad total fusionada
+  float ax, ay, az;             // Aceleraciones procesadas
+  float gz;                     // Giroscopio Z procesado
   float temp_box_c, temp_motor_c;
   float brake_pos;
   float gps_speed_mps;
   uint32_t ts_ms;
 } TelemetryProc_t;
 
-/* Colas RTOS */
-QueueHandle_t q_raw;      // TelemetryRaw_t
-QueueHandle_t q_proc;     // TelemetryProc_t
+/* Colas RTOS para pasar datos entre tareas */
+QueueHandle_t q_raw;      // Cola de datos crudos (TelemetryRaw_t)
+QueueHandle_t q_proc;     // Cola de datos procesados (TelemetryProc_t)
 
-/* Tareas RTOS */
-void task_acq(void *arg);
-void task_proc(void *arg);
-void task_can(void *arg);
-void task_health(void *arg);
+/* Prototipos de tareas RTOS */
+void task_acq(void *arg);      // Adquisición de sensores
+void task_proc(void *arg);     // Procesamiento/fusión de datos
+void task_can(void *arg);      // Envío por CAN
+void task_health(void *arg);   // Estado del sistema
 
-/* Prototipos CubeMX */
+/* Prototipos de inicialización CubeMX */
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
@@ -105,12 +107,13 @@ static void MX_TIM2_Init(void);
 static void MX_CAN1_Init(void);
 
 /* Utilidades */
-static inline uint32_t millis(void) { return HAL_GetTick(); }
-float lpf(float x, float y_prev, float alpha) { return alpha*x + (1.0f-alpha)*y_prev; }
+static inline uint32_t millis(void) { return HAL_GetTick(); } // Retorna ms desde arranque
+float lpf(float x, float y_prev, float alpha) { return alpha*x + (1.0f-alpha)*y_prev; } // Filtro paso bajo
 
 /* ===========================
    GPS: parseo mínimo GPRMC (speed knots -> m/s)
    =========================== */
+// Extrae velocidad, latitud y longitud de una trama NMEA $GPRMC
 static int parse_gprmc_speed(const char *nmea, float *speed_mps, double *lat, double *lon) {
   // Busca "$GPRMC", separa por comas. Formato básico: $GPRMC,time,status,lat,N,lon,E,speedKnots,course,date,...
   const char *p = strstr(nmea, "$GPRMC");
@@ -132,7 +135,7 @@ static int parse_gprmc_speed(const char *nmea, float *speed_mps, double *lat, do
     else if(field==6){ lon_ew=tok[0]; }
     else if(field==7){ spd_kn=atof(tok); }
   }
-  // Convierte lat/long ddmm.mmmm -> grados dec
+  // Convierte lat/long ddmm.mmmm -> grados decimales
   int lat_deg=(int)(lat_raw/100.0); double lat_min=lat_raw - lat_deg*100.0;
   int lon_deg=(int)(lon_raw/100.0); double lon_min=lon_raw - lon_deg*100.0;
   double lat_dec = lat_deg + lat_min/60.0;
@@ -140,7 +143,7 @@ static int parse_gprmc_speed(const char *nmea, float *speed_mps, double *lat, do
   if(lat_ns=='S') lat_dec=-lat_dec;
   if(lon_ew=='W') lon_dec=-lon_dec;
 
-  *speed_mps = spd_kn * 0.514444f;
+  *speed_mps = spd_kn * 0.514444f; // knots a m/s
   if(lat) *lat=lat_dec;
   if(lon) *lon=lon_dec;
   return 1;
@@ -149,10 +152,12 @@ static int parse_gprmc_speed(const char *nmea, float *speed_mps, double *lat, do
 /* ===========================
    MPU6050: init + lectura burst
    =========================== */
+// Inicializa el MPU6050 (quita sleep)
 static HAL_StatusTypeDef mpu6050_init(void){
   uint8_t d[2] = {MPU6050_REG_PWR_MGMT1, 0x00}; // wake up
   return HAL_I2C_Master_Transmit(&hi2c1, MPU6050_ADDR, d, 2, 100);
 }
+// Lee acelerómetro y giroscopio (6 ejes)
 static HAL_StatusTypeDef mpu6050_read6(float *ax,float *ay,float *az,float *gx,float *gy,float *gz){
   uint8_t reg = MPU6050_REG_ACCEL_XOUT;
   uint8_t rx[14];
@@ -173,6 +178,7 @@ static HAL_StatusTypeDef mpu6050_read6(float *ax,float *ay,float *az,float *gx,f
 /* ===========================
    CAN: helper de envío
    =========================== */
+// Inicializa y configura el filtro CAN
 static void can_start(void){
   CAN_FilterTypeDef f = {0};
   f.FilterBank = 0; f.FilterMode = CAN_FILTERMODE_IDMASK; f.FilterScale = CAN_FILTERSCALE_32BIT;
@@ -182,13 +188,14 @@ static void can_start(void){
   HAL_CAN_Start(&hcan1);
 }
 
+// Envia un mensaje CAN de hasta 8 bytes
 static void can_send_u8(uint16_t id, const uint8_t *p, uint8_t len){
   CAN_TxHeaderTypeDef tx={0}; tx.StdId=id; tx.IDE=CAN_ID_STD; tx.RTR=CAN_RTR_DATA; tx.DLC=len;
   uint32_t mb;
   HAL_CAN_AddTxMessage(&hcan1, &tx, (uint8_t*)p, &mb);
 }
 
-/* Empaquetadores: compactos; valores en 16-bit o 32-bit según campo */
+// Empaquetadores para cada tipo de dato (ruedas, freno, temp, IMU, GPS, health)
 static void send_wheel_speed(uint16_t id, float mps){
   int16_t v = (int16_t)(mps*1000); // m/s * 1e3
   uint8_t d[2] = { (uint8_t)(v>>8), (uint8_t)v };
@@ -220,18 +227,18 @@ static void send_health(float vbat, int8_t rssi, uint8_t cpu){
    =========================== */
 int main(void)
 {
-  HAL_Init();
-  SystemClock_Config();
-  MX_GPIO_Init();
-  MX_DMA_Init();
-  MX_I2C1_Init();
-  MX_USART2_UART_Init();
-  MX_ADC1_Init();
-  MX_TIM2_Init();
-  MX_CAN1_Init();
+  HAL_Init();                 // Inicializa HAL y Systick
+  SystemClock_Config();       // Configura reloj del sistema
+  MX_GPIO_Init();             // Inicializa GPIOs
+  MX_DMA_Init();              // Inicializa DMA
+  MX_I2C1_Init();             // Inicializa I2C1
+  MX_USART2_UART_Init();      // Inicializa UART2 (GPS)
+  MX_ADC1_Init();             // Inicializa ADC1
+  MX_TIM2_Init();             // Inicializa Timer2 (Input Capture)
+  MX_CAN1_Init();             // Inicializa CAN1
 
-  can_start();
-  mpu6050_init();
+  can_start();                // Inicia CAN y filtro
+  mpu6050_init();             // Inicializa IMU
 
   /* ADC DMA continuo */
   HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buf, ADC_NUM_CH);
@@ -255,13 +262,14 @@ int main(void)
   xTaskCreate(task_can,   "canTx", 512, NULL, tskIDLE_PRIORITY+3, NULL);
   xTaskCreate(task_health,"health",384, NULL, tskIDLE_PRIORITY+1, NULL);
 
-  vTaskStartScheduler();
-  while (1) { }
+  vTaskStartScheduler();      // Inicia el planificador FreeRTOS
+  while (1) { }               // Nunca debe llegar aquí
 }
 
 /* ===========================
    Tarea de Adquisición
    =========================== */
+// Lee sensores y llena TelemetryRaw_t
 void task_acq(void *arg)
 {
   const TickType_t dt_imu   = pdMS_TO_TICKS(1000/RATE_IMU_HZ);
@@ -323,6 +331,7 @@ void task_acq(void *arg)
 /* ===========================
    Tarea de Procesamiento (filtros sencillos + fusión básica)
    =========================== */
+// Aplica filtros y fusiona datos, llena TelemetryProc_t
 void task_proc(void *arg)
 {
   TelemetryRaw_t  r = {0};
@@ -353,6 +362,7 @@ void task_proc(void *arg)
 /* ===========================
    Tarea CAN Tx (empaqueta según Cap. 5)
    =========================== */
+// Envía los datos procesados por CAN
 void task_can(void *arg)
 {
   TelemetryProc_t p={0};
@@ -379,6 +389,7 @@ void task_can(void *arg)
 /* ===========================
    Tarea Health/Watchdog
    =========================== */
+// Envía estado del sistema por CAN
 void task_health(void *arg)
 {
   TickType_t t = xTaskGetTickCount();
@@ -395,6 +406,7 @@ void task_health(void *arg)
 /* ===========================
    Callbacks e ISRs
    =========================== */
+// Callback de captura de timer (ruedas)
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
   if(htim->Instance==TIM2){
     uint32_t now = HAL_TIM_ReadCapturedValue(htim, htim->Channel);
@@ -410,10 +422,12 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
   }
 }
 
+// Callback de conversión ADC completa
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc){
   if(hadc->Instance==ADC1){ adc_new=1; }
 }
 
+// Callback de recepción UART (GPS)
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
   if(huart->Instance==USART2){
     char c = (char)gps_rx_byte;
@@ -427,14 +441,19 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
    (placeholders — ajusta a tu proyecto)
    =========================== */
 
+// Configuración de reloj del sistema (debe completarse con CubeMX)
 void SystemClock_Config(void)
 {
   /* Configuración típica de 168 MHz (HSE 8MHz -> PLL) generada por CubeMX */
 }
 
+// Inicialización de GPIOs (debe completarse)
 static void MX_GPIO_Init(void){ /* ... */ }
+
+// Inicialización de DMA (debe completarse)
 static void MX_DMA_Init(void){ /* ... habilita DMA2 Stream0 para ADC1 ... */ }
 
+// Inicialización de I2C1
 static void MX_I2C1_Init(void)
 {
   hi2c1.Instance = I2C1;
@@ -449,6 +468,7 @@ static void MX_I2C1_Init(void)
   HAL_I2C_Init(&hi2c1);
 }
 
+// Inicialización de UART2 (GPS)
 static void MX_USART2_UART_Init(void)
 {
   huart2.Instance = USART2;
@@ -462,6 +482,7 @@ static void MX_USART2_UART_Init(void)
   HAL_UART_Init(&huart2);
 }
 
+// Inicialización de ADC1 (3 canales)
 static void MX_ADC1_Init(void)
 {
   ADC_ChannelConfTypeDef sConfig = {0};
@@ -483,6 +504,7 @@ static void MX_ADC1_Init(void)
   sConfig.Channel = ADC_CHANNEL_12; sConfig.Rank=3; HAL_ADC_ConfigChannel(&hadc1,&sConfig); // PC2
 }
 
+// Inicialización de Timer2 para Input Capture (ruedas)
 static void MX_TIM2_Init(void)
 {
   TIM_IC_InitTypeDef sConfigIC = {0};
@@ -503,6 +525,7 @@ static void MX_TIM2_Init(void)
   HAL_TIM_IC_ConfigChannel(&htim2,&sConfigIC,TIM_CHANNEL_4);
 }
 
+// Inicialización de CAN1
 static void MX_CAN1_Init(void)
 {
   hcan1.Instance = CAN1;
