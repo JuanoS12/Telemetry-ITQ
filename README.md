@@ -1,3 +1,6 @@
+SE DEBE DE LEER EN LA SECCIÓN DE CODIGO
+
+
 Telemetría (STM32F407VET6 → CAN → ESP32 → Nube)
 
 Estado actual: IMU (MPU6050) + GPS (NEO-6M) leídos por el STM32F407VET6 (FreeRTOS) y publicados por CAN @ 500 kbit/s hacia un ESP32 (TWAI).
