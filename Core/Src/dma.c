@@ -18,18 +18,29 @@
   */
 /* USER CODE END Header */
 
-/* Includes ------------------------------------------------------------------*/
+/* ===========================
+   INCLUSIÓN DE CABECERAS
+   =========================== */
+// Incluye el archivo de cabecera propio para la configuración de DMA
 #include "dma.h"
 
+/* ===========================
+   FUNCIONES AUXILIARES DE USUARIO
+   =========================== */
 /* USER CODE BEGIN 0 */
-#include "stm32f4xx_hal.h"
+#include "stm32f4xx_hal.h" // Incluye definiciones HAL para STM32F4
 
-// DMA error handler stub for improved error management
+/**
+ * @brief Manejador de errores para DMA.
+ * 
+ * Esta función es un "stub" (plantilla vacía) para que el usuario implemente
+ * manejo de errores personalizado en caso de fallos en transferencias DMA.
+ * Por ejemplo, se puede agregar registro de errores, recuperación, etc.
+ */
 void DMA_ErrorHandler(void) {
-	 // TODO: set a fault flag, count errors, maybe trigger I2C/UART recoveries
-	  (void)hdma;
+     // TODO: set a fault flag, count errors, maybe trigger I2C/UART recoveries
+      (void)hdma; // hdma sería una variable global si tienes varios canales DMA
 }
-
 /* USER CODE END 0 */
 
 /*----------------------------------------------------------------------------*/
@@ -37,31 +48,43 @@ void DMA_ErrorHandler(void) {
 /*----------------------------------------------------------------------------*/
 
 /* USER CODE BEGIN 1 */
-
+// Aquí puedes agregar variables globales o funciones relacionadas con DMA
 /* USER CODE END 1 */
 
 /**
-  * Enable DMA controller clock
+  * @brief Habilita el reloj del controlador DMA y configura las interrupciones.
+  * 
+  * Esta función inicializa el hardware DMA del STM32, habilitando el reloj
+  * y configurando las prioridades y habilitación de las interrupciones para
+  * los streams usados por USART1 (RX y TX).
+  * 
+  * El DMA permite transferencias de datos entre periféricos y memoria sin
+  * intervención directa del CPU, lo que mejora el rendimiento y reduce la carga.
   */
 void MX_DMA_Init(void)
 {
 
-	 /* DMA controller clock enable */
-	  __HAL_RCC_DMA2_CLK_ENABLE();
+     /* DMA controller clock enable */
+      __HAL_RCC_DMA2_CLK_ENABLE(); // Habilita el reloj para el controlador DMA2
 
-	  /* ---- USART1_RX uses DMA2 Stream2 / Channel 4 ---- */
-	  HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 5, 0);   // >= MAX_SYSCALL_PRI (FreeRTOS safe)
-	  HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
+      /* ---- USART1_RX usa DMA2 Stream2 / Channel 4 ---- */
+      // Configura la prioridad de la interrupción para el stream de recepción
+      HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 5, 0);   // >= MAX_SYSCALL_PRI (FreeRTOS safe)
+      HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);           // Habilita la interrupción
 
-	  /* ---- USART1_TX (placeholder) uses DMA2 Stream7 / Channel 4 ---- */
-	  HAL_NVIC_SetPriority(DMA2_Stream7_IRQn, 6, 0);   // enabled now, you can use later
-	  HAL_NVIC_EnableIRQ(DMA2_Stream7_IRQn);
+      /* ---- USART1_TX (placeholder) usa DMA2 Stream7 / Channel 4 ---- */
+      // Configura la prioridad de la interrupción para el stream de transmisión
+      HAL_NVIC_SetPriority(DMA2_Stream7_IRQn, 6, 0);   // enabled now, you can use later
+      HAL_NVIC_EnableIRQ(DMA2_Stream7_IRQn);           // Habilita la interrupción
 
+      // Nota: Si usas otros periféricos con DMA (ADC, I2C, etc.), debes habilitar sus streams aquí
 }
 
 /* USER CODE BEGIN 2 */
-
-// Additional DMA functions and improvements can be added here
-
+/**
+ * Aquí puedes agregar funciones adicionales para mejorar el manejo de DMA,
+ * como callbacks personalizados, inicialización de otros streams, o rutinas
+ * para recuperación en caso de error.
+ */
 /* USER CODE END 2 */
 
