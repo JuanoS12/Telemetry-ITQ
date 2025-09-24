@@ -242,10 +242,14 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* uartHandle)
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART1) {
-    // Re-armar la recepción por DMA después de un error
-    extern uint8_t gps_rx[];                  // Definido en main.c
-    HAL_UARTEx_ReceiveToIdle_DMA(&huart1, gps_rx, sizeof(gps_rx));
-    __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
+    // Re-armar la recepcion por DMA despues de un error
+    if (HAL_UARTEx_ReceiveToIdle_DMA(&huart1, gps_rx, sizeof gps_rx) != HAL_OK) {
+      USART_ErrorHandler();
+      return;
+    }
+    if (huart1.hdmarx != NULL) {
+      __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
+    }
   }
 }
 

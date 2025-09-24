@@ -52,7 +52,8 @@ extern "C" {
 /* Exported functions prototypes ---------------------------------------------*/
 void Error_Handler(void);
 
-/* USER CODE BEGIN EFP */
+/* USER CODE BEGIN EFP */
+extern uint8_t gps_rx[512];
 
 /* USER CODE END EFP */
 

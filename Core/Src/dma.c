@@ -38,8 +38,7 @@
  * Por ejemplo, se puede agregar registro de errores, recuperación, etc.
  */
 void DMA_ErrorHandler(void) {
-     // TODO: set a fault flag, count errors, maybe trigger I2C/UART recoveries
-      (void)hdma; // hdma sería una variable global si tienes varios canales DMA
+  // TODO: set a fault flag, count errors, maybe trigger I2C/UART recoveries
 }
 /* USER CODE END 0 */
 

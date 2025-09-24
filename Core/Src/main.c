@@ -67,6 +67,10 @@
    =========================== */
 /* USER CODE BEGIN PV */
 // Aquí puedes definir variables globales privadas para este archivo
+
+extern StreamBufferHandle_t SB_GPS; // Stream buffer definido en freertos.c
+uint8_t gps_rx[512];                 // Buffer global para datos crudos de GPS
+volatile uint32_t gps_stream_overruns = 0; // Conteo de bytes descartados en ISR
 /* USER CODE END PV */
 
 /* ===========================
@@ -78,6 +82,8 @@ void SystemClock_Config(void);
 void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN PFP */
 // Aquí puedes declarar prototipos de funciones propias
+
+static void GPS_Start(void);
 /* USER CODE END PFP */
 
 /* ===========================
@@ -85,6 +91,19 @@ void MX_FREERTOS_Init(void);
    =========================== */
 /* USER CODE BEGIN 0 */
 // Aquí puedes agregar funciones auxiliares, variables, etc.
+
+static void GPS_Start(void){
+  // Arranca la recepcion por DMA asegurando que el buffer y el stream existen
+  if (SB_GPS == NULL) {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_ReceiveToIdle_DMA(&huart1, gps_rx, sizeof gps_rx) != HAL_OK) {
+    Error_Handler();
+  }
+  if (huart1.hdmarx != NULL) {
+    __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
+  }
+}
 /* USER CODE END 0 */
 
 /**
@@ -125,23 +144,8 @@ int main(void)
   MX_I2C1_Init();         // Inicializa el bus I2C1
 
   /* USER CODE BEGIN 2 */
-  // Aquí puedes agregar inicialización de periféricos o variables propias
-
-  // Declaración de variables externas y estáticas para GPS
-  extern UART_HandleTypeDef huart1;           // Manejador de UART1 (definido en usart.c)
-  extern StreamBufferHandle_t SB_GPS;         // Buffer de flujo para GPS (definido en freertos.c)
-  static uint8_t gps_rx[512];                 // Buffer para recepción de datos GPS por UART
-
-  // Función local para iniciar la recepción de datos GPS por DMA
-  static void GPS_Start(void){
-    // Inicia la recepción por DMA hasta que llegue un byte de "idle" (fin de trama)
-    HAL_UARTEx_ReceiveToIdle_DMA(&huart1, gps_rx, sizeof gps_rx);
-    // Deshabilita la interrupción de mitad de transferencia (HT) para evitar callbacks innecesarios
-    __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
-  }
-  // Llama a la función para iniciar la recepción de GPS
-  GPS_Start();
-  /* USER CODE END 2 */
+  // Aqui puedes agregar inicializacion de perifericos o variables propias
+/* USER CODE END 2 */
 
   /* ===========================
      INICIALIZACIÓN DEL SCHEDULER (FreeRTOS)
@@ -151,6 +155,9 @@ int main(void)
 
   // Inicializa los objetos de FreeRTOS (tareas, colas, semáforos, etc.)
   MX_FREERTOS_Init();
+
+  // Inicia la recepcion de GPS por DMA ahora que el StreamBuffer esta creado
+  GPS_Start();
 
   // Inicia el scheduler de FreeRTOS (las tareas comienzan a ejecutarse)
   osKernelStart();
@@ -238,21 +245,23 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 {
   // Verifica que el evento proviene de UART1
   if (huart->Instance == USART1){
-    BaseType_t w = pdFALSE; // Variable para indicar si se debe hacer un cambio de contexto
-    extern StreamBufferHandle_t SB_GPS; // Buffer de flujo para GPS
-    extern uint8_t gps_rx[];            // Buffer de recepción GPS
-
-    // Envía los datos recibidos al StreamBuffer (para que otra tarea los procese)
-    xStreamBufferSendFromISR(SB_GPS, gps_rx, Size, &w);
-
-    // Reinicia la recepción por DMA para la siguiente trama
-    HAL_UARTEx_ReceiveToIdle_DMA(&huart1, gps_rx, sizeof gps_rx);
-
-    // Deshabilita la interrupción de mitad de transferencia (HT)
-    __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
-
-    // Si una tarea de mayor prioridad fue desbloqueada, solicita cambio de contexto
-    portYIELD_FROM_ISR(w);
+    BaseType_t higherPriorityTaskWoken = pdFALSE;
+    size_t pushed = 0U;
+    if (SB_GPS != NULL) {
+      pushed = xStreamBufferSendFromISR(SB_GPS, gps_rx, Size, &higherPriorityTaskWoken);
+      if (pushed != Size) {
+        gps_stream_overruns++;
+      }
+    } else {
+      gps_stream_overruns++;
+    }
+    if (HAL_UARTEx_ReceiveToIdle_DMA(&huart1, gps_rx, sizeof gps_rx) != HAL_OK) {
+      Error_Handler();
+    }
+    if (huart1.hdmarx != NULL) {
+      __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
+    }
+    portYIELD_FROM_ISR(higherPriorityTaskWoken);
   }
 }
 

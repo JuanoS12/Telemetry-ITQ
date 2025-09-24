@@ -62,23 +62,44 @@ static double dm2deg(double dm){
 // Parsea una línea NMEA y llena la estructura GPSFix
 static void GPS_ParseLine(const char* line, GPSFix* g){
   if (!strncmp(line,"$GPRMC",6)||!strncmp(line,"$GNRMC",6)){
-    char *f[16]={0}; char tmp[128]; strncpy(tmp,line,sizeof(tmp));
-    char *p=tmp; int i=0; while(i<16 && (f[i]=strtok(i?NULL:p,","))) {i++; p=NULL;}
-    if (f[2] && f[2][0]=='A'){ 
-      g->lat_deg=dm2deg(atof(f[3])); if (f[4][0]=='S') g->lat_deg=-g->lat_deg;
-      g->lon_deg=dm2deg(atof(f[5])); if (f[6][0]=='W') g->lon_deg=-g->lon_deg;
-      g->speed_ms=(float)(atof(f[7])*0.514444f); 
-      g->course_deg=(float)atof(f[8]); 
-      g->fix=1; 
-      g->tms=HAL_GetTick(); 
+    char *f[16]={0};
+    char tmp[128];
+    size_t len=0U;
+    while (len < sizeof(tmp)-1U && line[len] != '\0') { len++; }
+    memcpy(tmp, line, len);
+    tmp[len] = '\0';
+    char *p=tmp; int i=0;
+    while(i<16 && (f[i]=strtok(i?NULL:p,","))) {i++; p=NULL;}
+    if (f[2] && f[2][0]=='A'){
+      g->lat_deg=dm2deg(atof(f[3])); if (f[4] && f[4][0]=='S') g->lat_deg=-g->lat_deg;
+      g->lon_deg=dm2deg(atof(f[5])); if (f[6] && f[6][0]=='W') g->lon_deg=-g->lon_deg;
+      g->speed_ms=(float)(atof(f[7])*0.514444f);
+      g->course_deg=(float)atof(f[8]);
+      g->fix=1;
+      g->tms=HAL_GetTick();
     }
   } else if (!strncmp(line,"$GPGGA",6)||!strncmp(line,"$GNGGA",6)){
-    char *f[16]={0}; char tmp[128]; strncpy(tmp,line,sizeof(tmp));
-    char *p=tmp; int i=0; while(i<16 && (f[i]=strtok(i?NULL:p,","))) {i++; p=NULL;}
+    char *f[16]={0};
+    char tmp[128];
+    size_t len=0U;
+    while (len < sizeof(tmp)-1U && line[len] != '\0') { len++; }
+    memcpy(tmp, line, len);
+    tmp[len] = '\0';
+    char *p=tmp; int i=0;
+    while(i<16 && (f[i]=strtok(i?NULL:p,","))) {i++; p=NULL;}
     if (f[6]){ int q=atoi(f[6]); g->fix = (q>0)? (g->fix?g->fix:1):0; }
-    if (f[7]) g->sats=(uint8_t)atoi(f[7]); 
+    if (f[7]) g->sats=(uint8_t)atoi(f[7]);
     if (f[8]) g->hdop=(float)atof(f[8]);
   }
+}
+
+static BaseType_t CAN_SendMessage(QueueHandle_t queue, const CANMsg *msg, TickType_t timeoutTicks, uint32_t *dropCounter)
+{
+  BaseType_t result = xQueueSend(queue, msg, timeoutTicks);
+  if (result != pdPASS && dropCounter != NULL) {
+    (*dropCounter)++;
+  }
+  return result;
 }
 
 /* ===========================
@@ -88,6 +109,10 @@ static void GPS_ParseLine(const char* line, GPSFix* g){
 // Colas y buffers globales para comunicación entre tareas
 QueueHandle_t Q_CAN_TX;        // Cola para mensajes CAN a transmitir
 StreamBufferHandle_t SB_GPS;   // Buffer de flujo para bytes crudos de GPS (desde USART1 DMA)
+static const TickType_t CAN_TX_TIMEOUT = pdMS_TO_TICKS(5); // Espera maxima antes de descartar
+static uint32_t can_tx_drop_imu = 0;  // Contador de descartes de IMU
+static uint32_t can_tx_drop_gps = 0;  // Contador de descartes de GPS
+
 
 // Estructura para muestras de IMU (acelerómetro, giroscopio, temperatura)
 typedef struct { 
@@ -184,7 +209,9 @@ extern HAL_StatusTypeDef MPU6050_Read(IMUSample *s);
 void StartSensorTask(void *argument)
 {
   (void)argument;
-  MPU6050_Init_200Hz(); // Inicializa la IMU a 200 Hz
+  if (MPU6050_Init_200Hz() != HAL_OK) {
+    Error_Handler();
+  } // Inicializa la IMU a 200 Hz
   TickType_t t0 = xTaskGetTickCount();
   uint16_t ctr=0; // Contador de muestras (útil para debug)
   for(;;){
@@ -196,10 +223,10 @@ void StartSensorTask(void *argument)
       CANMsg m;
       // Primer mensaje: aceleraciones + contador
       m.id=0x100; memcpy(&m.d[0],&ax,2); memcpy(&m.d[2],&ay,2); memcpy(&m.d[4],&az,2); memcpy(&m.d[6],&ctr,2);
-      xQueueSend(Q_CAN_TX,&m,0);
+      CAN_SendMessage(Q_CAN_TX, &m, CAN_TX_TIMEOUT, &can_tx_drop_imu);
       // Segundo mensaje: giros + temperatura
       m.id=0x101; memcpy(&m.d[0],&gx,2); memcpy(&m.d[2],&gy,2); memcpy(&m.d[4],&gz,2); memcpy(&m.d[6],&tC,2);
-      xQueueSend(Q_CAN_TX,&m,0);
+      CAN_SendMessage(Q_CAN_TX, &m, CAN_TX_TIMEOUT, &can_tx_drop_imu);
       ctr++;
     }
     vTaskDelayUntil(&t0, pdMS_TO_TICKS(10)); // Espera hasta el siguiente periodo (100 Hz)
@@ -238,10 +265,11 @@ void StartGPSTask(void *argument)
             // Si hay posición válida, empaqueta y envía por CAN
             int32_t lat=llrint(g.lat_deg*1e7), lon=llrint(g.lon_deg*1e7);
             CANMsg m;
-            m.id=0x120; memcpy(&m.d[0],&lat,4); memcpy(&m.d[4],&lon,4); xQueueSend(Q_CAN_TX,&m,0);
+            m.id=0x120; memcpy(&m.d[0],&lat,4); memcpy(&m.d[4],&lon,4);
+            CAN_SendMessage(Q_CAN_TX, &m, CAN_TX_TIMEOUT, &can_tx_drop_gps);
             int16_t v=lrintf(g.speed_ms*100), cr=lrintf(g.course_deg*100), hd=lrintf(g.hdop*100);
             m.id=0x121; memcpy(&m.d[0],&v,2); memcpy(&m.d[2],&cr,2); memcpy(&m.d[4],&hd,2); m.d[6]=g.fix; m.d[7]=g.sats;
-            xQueueSend(Q_CAN_TX,&m,0);
+            CAN_SendMessage(Q_CAN_TX, &m, CAN_TX_TIMEOUT, &can_tx_drop_gps);
           }
         }
         ll=0; // Reinicia el buffer de línea
