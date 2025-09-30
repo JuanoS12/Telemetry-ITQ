@@ -2,7 +2,7 @@
 /**
   ******************************************************************************
   * File Name          : freertos.c
-  * Description        : Code for freertos applications
+  * Description        : Code for freertos applications made by Alonso 
   ******************************************************************************
   * @attention
   *
