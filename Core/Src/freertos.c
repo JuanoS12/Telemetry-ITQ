@@ -107,8 +107,8 @@ static BaseType_t CAN_SendMessage(QueueHandle_t queue, const CANMsg *msg, TickTy
    =========================== */
 /* USER CODE BEGIN PD */
 // Colas y buffers globales para comunicación entre tareas
-QueueHandle_t Q_CAN_TX;        // Cola para mensajes CAN a transmitir
-StreamBufferHandle_t SB_GPS;   // Buffer de flujo para bytes crudos de GPS (desde USART1 DMA)
+QueueHandle_t Q_CAN_TX;
+StreamBufferHandle_t SB_GPS;   // buffer used by usart.c
 static const TickType_t CAN_TX_TIMEOUT = pdMS_TO_TICKS(5); // Espera maxima antes de descartar
 static uint32_t can_tx_drop_imu = 0;  // Contador de descartes de IMU
 static uint32_t can_tx_drop_gps = 0;  // Contador de descartes de GPS
@@ -171,23 +171,22 @@ void MX_FREERTOS_Init(void) {
   /* USER CODE END Init */
 
   /* USER CODE BEGIN RTOS_QUEUES */
-  // Crea la cola para mensajes CAN (32 frames)
   Q_CAN_TX = xQueueCreate(32, sizeof(CANMsg));
-  // Crea el buffer de flujo para GPS (512 bytes, trigger cada 32)
   SB_GPS   = xStreamBufferCreate(512, 32);
-  // Verifica que las colas/buffers se crearon correctamente
   configASSERT(Q_CAN_TX != NULL);
-  configASSERT(SB_GPS   != NULL);
+  configASSERT(SB_GPS != NULL);
   /* USER CODE END RTOS_QUEUES */
 
-  /* Creación de las tareas */
+  /* Create tasks */
   SensorTaskHandle = osThreadNew(StartSensorTask, NULL, &SensorTask_attributes);
   GPSTaskHandle    = osThreadNew(StartGPSTask, NULL, &GPSTask_attributes);
   CanTxTaskHandle  = osThreadNew(StartCanTxTask, NULL, &CanTxTask_attributes);
   LedTaskHandle    = osThreadNew(StartTask04, NULL, &LedTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  // Puedes agregar más tareas aquí si lo necesitas
+  // After creating SB_GPS we can start the GPS DMA safely
+  extern void GPS_Start(void); // implemented in usart.c
+  GPS_Start();
   /* USER CODE END RTOS_THREADS */
 }
 

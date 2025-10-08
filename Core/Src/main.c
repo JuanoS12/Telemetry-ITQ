@@ -69,8 +69,6 @@
 // Aquí puedes definir variables globales privadas para este archivo
 
 extern StreamBufferHandle_t SB_GPS; // Stream buffer definido en freertos.c
-uint8_t gps_rx[512];                 // Buffer global para datos crudos de GPS
-volatile uint32_t gps_stream_overruns = 0; // Conteo de bytes descartados en ISR
 /* USER CODE END PV */
 
 /* ===========================
@@ -83,27 +81,14 @@ void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN PFP */
 // Aquí puedes declarar prototipos de funciones propias
 
-static void GPS_Start(void);
+extern void GPS_Start(void);
 /* USER CODE END PFP */
 
 /* ===========================
    CÓDIGO DE USUARIO
    =========================== */
 /* USER CODE BEGIN 0 */
-// Aquí puedes agregar funciones auxiliares, variables, etc.
-
-static void GPS_Start(void){
-  // Arranca la recepcion por DMA asegurando que el buffer y el stream existen
-  if (SB_GPS == NULL) {
-    Error_Handler();
-  }
-  if (HAL_UARTEx_ReceiveToIdle_DMA(&huart1, gps_rx, sizeof gps_rx) != HAL_OK) {
-    Error_Handler();
-  }
-  if (huart1.hdmarx != NULL) {
-    __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
-  }
-}
+// removed static GPS_Start implementation here (moved to usart.c)
 /* USER CODE END 0 */
 
 /**
@@ -137,47 +122,36 @@ int main(void)
      INICIALIZACIÓN DE PERIFÉRICOS
      =========================== */
   // Inicializa los periféricos configurados en CubeMX
-  MX_GPIO_Init();         // Inicializa los pines GPIO
-  MX_DMA_Init();          // Inicializa el controlador DMA
-  MX_USART1_UART_Init();  // Inicializa UART1 (usado para GPS)
-  MX_CAN1_Init();         // Inicializa el bus CAN1
-  MX_I2C1_Init();         // Inicializa el bus I2C1
+  MX_GPIO_Init();
+  MX_DMA_Init();
+  MX_I2C1_Init();
+  MX_USART1_UART_Init();
+  MX_CAN1_Init();
 
   /* USER CODE BEGIN 2 */
   // Aqui puedes agregar inicializacion de perifericos o variables propias
-/* USER CODE END 2 */
+  can_start();                // starts CAN and filters (function in can.c)
+  // initialize IMU low-level here if you want, but prefer the RTOS task to init MPU
+  // mpu6050_init(); // commented: MPU init moved/handled by freertos sensor task using mpu6050.c
 
-  /* ===========================
-     INICIALIZACIÓN DEL SCHEDULER (FreeRTOS)
-     =========================== */
-  // Inicializa el kernel de FreeRTOS (crea estructuras internas)
-  osKernelInitialize();
+  /* ADC DMA continuo -- commented until ADC channels are validated
+     HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buf, ADC_NUM_CH);
+     (TODO: re-enable after ADC channel mapping verified) */
 
-  // Inicializa los objetos de FreeRTOS (tareas, colas, semáforos, etc.)
+  /* GPS UART RX handled by usart.c GPS_Start() AFTER SB_GPS is created in MX_FREERTOS_Init */
+  // HAL_UART_Receive_IT(&huart2, (uint8_t*)&gps_rx_byte, 1); // removed
+
+  /* Colas and StreamBuffer creation moved to freertos.c (MX_FREERTOS_Init) */
+  // q_raw  = xQueueCreate(8, sizeof(TelemetryRaw_t)); // kept in freertos.c / refactor
+  // q_proc = xQueueCreate(8, sizeof(TelemetryProc_t));
+
+  /* Tareas created in MX_FREERTOS_Init() */
   MX_FREERTOS_Init();
 
-  // Inicia la recepcion de GPS por DMA ahora que el StreamBuffer esta creado
-  GPS_Start();
+  /* Start scheduler */
+  vTaskStartScheduler();
 
-  // Inicia el scheduler de FreeRTOS (las tareas comienzan a ejecutarse)
-  osKernelStart();
-
-  // El control nunca debería regresar aquí, ya que el scheduler toma el control
-
-  /* ===========================
-     BUCLE INFINITO DE SEGURIDAD
-     =========================== */
-  /* USER CODE BEGIN WHILE */
-  while (1)
-  {
-    // Si el scheduler falla, el programa queda aquí
-    /* USER CODE END WHILE */
-
-    /* USER CODE BEGIN 3 */
-    // Puedes agregar código de emergencia aquí (parpadeo de LED, etc.)
-    /* USER CODE END 3 */
-  }
-  /* USER CODE END 3 */
+  while (1) { }
 }
 
 /**
@@ -230,41 +204,6 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-
-/**
-  * @brief Callback de recepción UART por DMA con evento "idle".
-  * @param huart: puntero al manejador de UART
-  * @param Size: cantidad de bytes recibidos
-  *
-  * Esta función se llama automáticamente cuando se recibe una trama por UART1
-  * usando DMA y se detecta un evento "idle" (fin de transmisión).
-  * El buffer recibido se envía a un StreamBuffer de FreeRTOS para procesarlo
-  * en una tarea. Luego se reinicia la recepción por DMA.
-  */
-void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
-{
-  // Verifica que el evento proviene de UART1
-  if (huart->Instance == USART1){
-    BaseType_t higherPriorityTaskWoken = pdFALSE;
-    size_t pushed = 0U;
-    if (SB_GPS != NULL) {
-      pushed = xStreamBufferSendFromISR(SB_GPS, gps_rx, Size, &higherPriorityTaskWoken);
-      if (pushed != Size) {
-        gps_stream_overruns++;
-      }
-    } else {
-      gps_stream_overruns++;
-    }
-    if (HAL_UARTEx_ReceiveToIdle_DMA(&huart1, gps_rx, sizeof gps_rx) != HAL_OK) {
-      Error_Handler();
-    }
-    if (huart1.hdmarx != NULL) {
-      __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
-    }
-    portYIELD_FROM_ISR(higherPriorityTaskWoken);
-  }
-}
-
 /* USER CODE END 4 */
 
 /**

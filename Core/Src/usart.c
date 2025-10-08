@@ -30,6 +30,15 @@
    FUNCIONES AUXILIARES DE USUARIO
    =========================== */
 /* USER CODE BEGIN 0 */
+#include "cmsis_os.h"
+#include "stream_buffer.h"
+#include "FreeRTOS.h"
+#include "task.h"
+
+// GPS RX buffer for DMA (single circular buffer used by HAL_UARTEx_ReceiveToIdle_DMA)
+static uint8_t gps_rx_buf[512];
+// Overruns counter for diagnostics (incremented in ISR when SB_GPS is full)
+static volatile uint32_t gps_stream_overruns_local = 0;
 
 /**
  * @brief Manejador de errores para USART.
@@ -231,25 +240,60 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* uartHandle)
 /* USER CODE BEGIN 1 */
 
 /**
- * @brief Callback de error para USART.
- * 
- * Esta función se llama automáticamente cuando ocurre un error en la comunicación
- * UART (por ejemplo, error de framing, overrun, etc.). El objetivo es recuperar
- * la recepción por DMA para evitar que el sistema se quede sin recibir datos.
- * 
- * @param huart Puntero al manejador UART donde ocurrió el error.
+ * @brief Start GPS reception using HAL UART "ReceiveToIdle" + DMA.
+ *
+ * Preconditions / notes:
+ * - A StreamBuffer SB_GPS must exist before calling this function.
+ *   MX_FREERTOS_Init (freertos.c) creates SB_GPS; call GPS_Start() after that creation.
+ * - Verify the DMA stream/channel mapping that CubeMX generated for USART1 RX and match
+ *   hdma_usart1_rx.Instance / channel here. If your CubeMX uses a different stream, adjust.
+ */
+extern StreamBufferHandle_t SB_GPS; // defined/created in freertos.c
+UART_HandleTypeDef huart1;          // actual handler is defined in usart.c (kept)
+void GPS_Start(void)
+{
+  // Ensure SB_GPS exists
+  configASSERT(SB_GPS != NULL);
+
+  // Start HAL "Receive to Idle" using DMA. This fills gps_rx_buf and triggers HAL_UARTEx_RxEventCallback
+  if (HAL_UARTEx_ReceiveToIdle_DMA(&huart1, gps_rx_buf, sizeof(gps_rx_buf)) != HAL_OK) {
+    // If start fails, call error handler (could be temporary; consider retry logic)
+    Error_Handler();
+  }
+  // Disable half-transfer IRQ to rely only on Idle event (common pattern)
+  __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
+}
+
+/**
+ * @brief UART RxEvent callback invoked by HAL when DMA detect "Idle" (end of frame).
+ *        This implementation sends the received bytes into the SB_GPS stream buffer from ISR.
+ */
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
+{
+  if (huart->Instance == USART1) {
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    // Send bytes to stream buffer from ISR. Returns number actually written.
+    size_t sent = xStreamBufferSendFromISR(SB_GPS, gps_rx_buf, (size_t)Size, &xHigherPriorityTaskWoken);
+    if (sent != Size) {
+      // Not all bytes fit: increment overrun counter for diagnostics
+      gps_stream_overruns_local += (Size - sent);
+    }
+    // Re-arm reception for next packet
+    HAL_UARTEx_ReceiveToIdle_DMA(&huart1, gps_rx_buf, sizeof(gps_rx_buf));
+    __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+  }
+}
+
+/**
+ * @brief UART error callback: attempt to re-arm the RX DMA to continue receiving.
  */
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART1) {
-    // Re-armar la recepcion por DMA despues de un error
-    if (HAL_UARTEx_ReceiveToIdle_DMA(&huart1, gps_rx, sizeof gps_rx) != HAL_OK) {
-      USART_ErrorHandler();
-      return;
-    }
-    if (huart1.hdmarx != NULL) {
-      __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
-    }
+    // Try to recover reception: re-arm DMA receive-to-idle
+    HAL_UARTEx_ReceiveToIdle_DMA(&huart1, gps_rx_buf, sizeof(gps_rx_buf));
+    __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
   }
 }
 

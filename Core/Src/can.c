@@ -106,23 +106,18 @@ void MX_CAN1_Init(void)
     Error_Handler(); // Si falla, llama a la función de error
   }
   /* USER CODE BEGIN CAN1_Init 2 */
-    // Configura un filtro de aceptación "accept-all" (acepta todos los mensajes)
-    CAN_FilterTypeDef f = {0};
-    f.FilterBank = 0;
-    f.FilterMode = CAN_FILTERMODE_IDMASK;
-    f.FilterScale = CAN_FILTERSCALE_32BIT;
-    f.FilterIdHigh = 0; f.FilterIdLow = 0;
-    f.FilterMaskIdHigh = 0; f.FilterMaskIdLow = 0;
-    f.FilterFIFOAssignment = CAN_FILTER_FIFO0;
-    f.FilterActivation = ENABLE;
-    if (HAL_CAN_ConfigFilter(&hcan1, &f) != HAL_OK) { Error_Handler(); }
-
-    // Inicia el periférico CAN y activa las interrupciones de recepción y error
-    if (HAL_CAN_Start(&hcan1) != HAL_OK) { Error_Handler(); }
-    if (HAL_CAN_ActivateNotification(&hcan1,
-          CAN_IT_RX_FIFO0_MSG_PENDING | CAN_IT_BUSOFF |
-          CAN_IT_ERROR_WARNING | CAN_IT_ERROR_PASSIVE) != HAL_OK) { Error_Handler(); }
-
+  // ensure filter configured and notifications enabled (already in file); must be called after HAL_CAN_Init
+  CAN_FilterTypeDef f = {0};
+  f.FilterBank = 0;
+  f.FilterMode = CAN_FILTERMODE_IDMASK;
+  f.FilterScale = CAN_FILTERSCALE_32BIT;
+  f.FilterIdHigh = 0; f.FilterIdLow = 0;
+  f.FilterMaskIdHigh = 0; f.FilterMaskIdLow = 0;
+  f.FilterFIFOAssignment = CAN_FILTER_FIFO0;
+  f.FilterActivation = ENABLE;
+  if (HAL_CAN_ConfigFilter(&hcan1, &f) != HAL_OK) { Error_Handler(); }
+  if (HAL_CAN_Start(&hcan1) != HAL_OK) { Error_Handler(); }
+  if (HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING | CAN_IT_BUSOFF | CAN_IT_ERROR) != HAL_OK) { Error_Handler(); }
   /* USER CODE END CAN1_Init 2 */
 
 }
@@ -223,10 +218,27 @@ void HAL_CAN_MspDeInit(CAN_HandleTypeDef* canHandle)
  * @param data  Arreglo de 8 bytes con los datos a transmitir.
  * @return      Estado de la transmisión (HAL_OK si fue exitosa).
  */
+// Improved transmit helper: retries for a short bounded time if mailboxes busy.
+// Returns HAL_OK on success, HAL_ERROR on failure after timeout.
 HAL_StatusTypeDef CAN1_SendStd(uint16_t id, const uint8_t data[8]) {
-  CAN_TxHeaderTypeDef tx = {0}; uint32_t mb;
-  tx.StdId=id; tx.IDE=CAN_ID_STD; tx.RTR=CAN_RTR_DATA; tx.DLC=8;
-  return HAL_CAN_AddTxMessage(&hcan1, &tx, (uint8_t*)data, &mb);
+  CAN_TxHeaderTypeDef tx = {0};
+  uint32_t mailbox;
+  tx.StdId = id;
+  tx.IDE = CAN_ID_STD;
+  tx.RTR = CAN_RTR_DATA;
+  tx.DLC = 8;
+
+  const TickType_t timeout = pdMS_TO_TICKS(5); // try for up to 5 ms
+  TickType_t start = xTaskGetTickCount();
+  while (HAL_CAN_AddTxMessage(&hcan1, &tx, (uint8_t*)data, &mailbox) != HAL_OK) {
+    // If HAL_CAN_AddTxMessage fails, poll mailbox availability; yield to other tasks briefly
+    if ((xTaskGetTickCount() - start) > timeout) {
+      // Timed out trying to queue the CAN message
+      return HAL_ERROR;
+    }
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+  return HAL_OK;
 }
 
 /**
