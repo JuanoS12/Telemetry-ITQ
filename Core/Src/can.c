@@ -24,6 +24,15 @@
 // Incluye el archivo de cabecera propio para la configuración de CAN
 #include "can.h"
 
+/* USER CODE BEGIN 0 */
+#include "can.h"
+
+/* Added: include FreeRTOS headers so TickType_t, pdMS_TO_TICKS, xTaskGetTickCount
+   and vTaskDelay are declared. This fixes the unknown type / implicit function errors. */
+#include "FreeRTOS.h"
+#include "task.h"
+/* USER CODE END 0 */
+
 /* ===========================
    FUNCIONES AUXILIARES DE USUARIO
    =========================== */
@@ -211,15 +220,8 @@ void HAL_CAN_MspDeInit(CAN_HandleTypeDef* canHandle)
    =========================== */
 /* USER CODE BEGIN 1 */
 
-/**
- * @brief Función auxiliar para enviar un mensaje CAN estándar (ID de 11 bits, 8 bytes de datos).
- * 
- * @param id    Identificador estándar de 11 bits para el mensaje CAN.
- * @param data  Arreglo de 8 bytes con los datos a transmitir.
- * @return      Estado de la transmisión (HAL_OK si fue exitosa).
- */
-// Improved transmit helper: retries for a short bounded time if mailboxes busy.
-// Returns HAL_OK on success, HAL_ERROR on failure after timeout.
+/* Improved transmit helper: retries for a short bounded time if mailboxes busy.
+   Returns HAL_OK on success, HAL_ERROR on failure after timeout. */
 HAL_StatusTypeDef CAN1_SendStd(uint16_t id, const uint8_t data[8]) {
   CAN_TxHeaderTypeDef tx = {0};
   uint32_t mailbox;
@@ -231,9 +233,7 @@ HAL_StatusTypeDef CAN1_SendStd(uint16_t id, const uint8_t data[8]) {
   const TickType_t timeout = pdMS_TO_TICKS(5); // try for up to 5 ms
   TickType_t start = xTaskGetTickCount();
   while (HAL_CAN_AddTxMessage(&hcan1, &tx, (uint8_t*)data, &mailbox) != HAL_OK) {
-    // If HAL_CAN_AddTxMessage fails, poll mailbox availability; yield to other tasks briefly
     if ((xTaskGetTickCount() - start) > timeout) {
-      // Timed out trying to queue the CAN message
       return HAL_ERROR;
     }
     vTaskDelay(pdMS_TO_TICKS(1));
@@ -241,36 +241,24 @@ HAL_StatusTypeDef CAN1_SendStd(uint16_t id, const uint8_t data[8]) {
   return HAL_OK;
 }
 
-/**
- * @brief Callback llamado automáticamente cuando hay un mensaje pendiente en el FIFO0 de recepción CAN.
- * 
- * @param hcan Puntero al manejador CAN donde ocurrió el evento.
- * 
- * Esta función se ejecuta en interrupción cuando llega un mensaje CAN. Aquí puedes procesar el mensaje,
- * enviarlo a una cola de FreeRTOS, o simplemente marcar que hubo actividad.
- */
-void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
+/* Provide a simple can_start() wrapper called from main to ensure CAN is started
+   and notifications are active. This resolves the implicit declaration warning
+   and gives a single entry to (re)start CAN at runtime. */
+void can_start(void)
 {
-  CAN_RxHeaderTypeDef rx; uint8_t d[8];
-  if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rx, d) == HAL_OK) {
-    // TODO: enviar el mensaje a una cola de FreeRTOS si se recibe de otro nodo (ej. ESP32)
-    // Por ahora, solo se recibe y descarta, o puedes poner un flag para depuración.
-  }
-}
+  CAN_FilterTypeDef f = {0};
+  f.FilterBank = 0;
+  f.FilterMode = CAN_FILTERMODE_IDMASK;
+  f.FilterScale = CAN_FILTERSCALE_32BIT;
+  f.FilterIdHigh = 0; f.FilterIdLow = 0;
+  f.FilterMaskIdHigh = 0; f.FilterMaskIdLow = 0;
+  f.FilterFIFOAssignment = CAN_FILTER_FIFO0;
+  f.FilterActivation = ENABLE;
 
-/**
- * @brief Callback llamado automáticamente cuando ocurre un error en el periférico CAN.
- * 
- * @param hcan Puntero al manejador CAN donde ocurrió el error.
- * 
- * Aquí puedes incrementar contadores de error, registrar el evento, etc.
- * Con AutoBusOff activado, HAL intentará recuperar el bus automáticamente.
- */
-void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan)
-{
-  uint32_t err = HAL_CAN_GetError(hcan);
-  // TODO: incrementar contadores, registrar el error, etc.
-  (void)err; // Evita advertencia si no se usa la variable
+  if (HAL_CAN_ConfigFilter(&hcan1, &f) != HAL_OK) { Error_Handler(); }
+  if (HAL_CAN_Start(&hcan1) != HAL_OK) { Error_Handler(); }
+  if (HAL_CAN_ActivateNotification(&hcan1,
+        CAN_IT_RX_FIFO0_MSG_PENDING | CAN_IT_BUSOFF | CAN_IT_ERROR) != HAL_OK) { Error_Handler(); }
 }
 
 /* USER CODE END 1 */
