@@ -77,6 +77,12 @@ Static analysis can be executed on the sources from this repository using `cppch
 cppcheck --enable=all --inconclusive --std=c99 Core/Src Core/Inc
 ```
 
+> **Note:** CubeMX-generated sources expect STM32 HAL headers from the IDE
+> installation. When those headers are not present relative to this repository,
+> `cppcheck` reports "missing include" diagnostics for files such as
+> `stm32f4xx_hal.h`. These messages are expected and do not indicate functional
+> issues with the firmware sources.
+
 Hardware-in-the-loop testing should confirm:
 - IMU frames on CAN IDs 0x100/0x101 and UART `IMU` lines at 100 Hz.
 - GPS frames on CAN IDs 0x120/0x121 and UART `GPS` lines when a fix is present.
