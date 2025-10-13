@@ -81,7 +81,6 @@ void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN PFP */
 // Aquí puedes declarar prototipos de funciones propias
 
-extern void GPS_Start(void);
 /* USER CODE END PFP */
 
 /* ===========================
@@ -126,6 +125,7 @@ int main(void)
   MX_DMA_Init();
   MX_I2C1_Init();
   MX_USART1_UART_Init();
+  MX_USART2_UART_Init();
   MX_CAN1_Init();
 
   /* USER CODE BEGIN 2 */
@@ -139,7 +139,7 @@ int main(void)
      (TODO: re-enable after ADC channel mapping verified) */
 
   /* GPS UART RX handled by usart.c GPS_Start() AFTER SB_GPS is created in MX_FREERTOS_Init */
-  // HAL_UART_Receive_IT(&huart2, (uint8_t*)&gps_rx_byte, 1); // removed
+  // HAL_UART_Receive_IT(&huart1, (uint8_t*)&gps_rx_byte, 1); // replaced by ReceiveToIdle DMA in GPS_Start()
 
   /* Colas and StreamBuffer creation moved to freertos.c (MX_FREERTOS_Init) */
   // q_raw  = xQueueCreate(8, sizeof(TelemetryRaw_t)); // kept in freertos.c / refactor
@@ -237,7 +237,7 @@ void Error_Handler(void)
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
-  printf("Wrong parameters value: file %s on line %lu\r\n", file, line);
+  printf("Wrong parameters value: file %s on line %lu\r\n", file, (unsigned long)line);
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
