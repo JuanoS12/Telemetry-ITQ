@@ -143,11 +143,7 @@ static uint32_t can_tx_drop_gps = 0;  // Contador de descartes de GPS
 static volatile uint32_t uart_drop_bytes = 0;  // Bytes que no cupieron en buffer UART
 
 
-// Estructura para muestras de IMU (acelerómetro, giroscopio, temperatura)
-typedef struct { 
-  float ax,ay,az,gx,gy,gz,tempC; // ax,ay,az: aceleraciones; gx,gy,gz: giros; tempC: temperatura
-  uint32_t tms;                  // timestamp en ms
-} IMUSample;
+// IMUSample se declara en mpu6050.h para compartir definición con el driver
 /* USER CODE END PD */
 
 /* ===========================
