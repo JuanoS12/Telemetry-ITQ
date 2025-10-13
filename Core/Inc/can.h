@@ -41,6 +41,7 @@ extern CAN_HandleTypeDef hcan1;
 void MX_CAN1_Init(void);
 
 /* USER CODE BEGIN Prototypes */
+HAL_StatusTypeDef CAN1_SendStd(uint16_t id, const uint8_t data[8]);
 void can_start(void);
 
 /* USER CODE END Prototypes */

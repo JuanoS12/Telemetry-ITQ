@@ -33,6 +33,7 @@
 #include "queue.h"         // API de colas FreeRTOS
 #include "stream_buffer.h" // API de buffers de flujo FreeRTOS
 #include "usart.h"         // Handlers UART (huart2 para telemetría)
+#include "can.h"           // Prototipos y manejadores de CAN
 #include "mpu6050.h"       // Prototipos del driver de IMU
 #include <string.h>        // Funciones estándar de manejo de cadenas
 #include <stdio.h>         // snprintf para tramas UART
@@ -220,7 +221,6 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_THREADS */
   // After creating SB_GPS we can start the GPS DMA safely
-  extern void GPS_Start(void); // implemented in usart.c
   GPS_Start();
   /* USER CODE END RTOS_THREADS */
 }
@@ -355,7 +355,6 @@ void StartGPSTask(void *argument)
 * 2. Cuando hay uno, lo transmite usando CAN1_SendStd.
 * 3. Si la transmisión falla, reintenta tras un pequeño delay.
 */
-extern HAL_StatusTypeDef CAN1_SendStd(uint16_t id, const uint8_t data[8]);
 void StartCanTxTask(void *argument)
 {
   (void)argument;

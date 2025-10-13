@@ -68,7 +68,6 @@
 /* USER CODE BEGIN PV */
 // Aquí puedes definir variables globales privadas para este archivo
 
-extern StreamBufferHandle_t SB_GPS; // Stream buffer definido en freertos.c
 /* USER CODE END PV */
 
 /* ===========================
