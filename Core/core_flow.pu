@@ -1,0 +1,60 @@
+@startuml
+start
+:HAL_Init();
+:SystemClock_Config();
+:MX_GPIO_Init();
+:MX_DMA_Init();
+:MX_I2C1_Init();
+:MX_USART1_UART_Init();
+:MX_CAN1_Init();
+:can_start();
+:MX_FREERTOS_Init();
+note right
+Creates Q_CAN_TX queue\nand SB_GPS stream buffer.\nSpawns Sensor, GPS,\nCAN TX and LED tasks.\nCalls GPS_Start() to arm\nDMA-based UART reception.
+end note
+: vTaskStartScheduler();
+
+fork
+  :SensorTask();
+  note right
+  MPU6050_Init_200Hz() once.\nLoop every 10 ms:\n- MPU6050_Read() sample.\n- Pack accel + counter -> CAN msg 0x100.\n- Pack gyro + temp -> CAN msg 0x101.\n- xQueueSend(Q_CAN_TX).
+  end note
+end fork
+fork again
+  :GPSTask();
+  note right
+  Reassemble NMEA lines from SB_GPS.\nIf fix valid:\n- Send lat/lon msg 0x120.\n- Send speed/course/hdop msg 0x121.\n- xQueueSend(Q_CAN_TX).
+  end note
+end fork
+fork again
+  :CanTxTask();
+  note right
+  Loop:\n  - xQueueReceive(Q_CAN_TX).\n  - Retry CAN1_SendStd() until HAL_OK.\n  Drops counted if queue full.
+  end note
+end fork
+fork again
+  :LedTask();
+  note right
+  Placeholder loop with 1 ms delay
+  for status handling.
+  end note
+end fork
+
+partition "Interrupt context" {
+  :HAL_UARTEx_RxEventCallback();
+  note right
+  Move DMA bytes into SB_GPS.\nRe-arm ReceiveToIdle DMA.\nCount overruns when buffer full.
+  end note
+}
+partition "Error paths" {
+  if (HAL init fails?) then (yes)
+    :Error_Handler();
+    stop
+  else (no)
+    note right
+    Runtime continues under FreeRTOS.
+    Retry loops handle transient errors.\n    Persistent CAN/UART errors\n    require user-defined handlers.
+    end note
+  endif
+}
+@enduml

@@ -1,22 +1,37 @@
-# STM32F4 IMU Project
+# STM32F4 Telemetry Node
 
-This project is for an STM32F4 microcontroller, implementing an Inertial Measurement Unit (IMU) application. It initializes and uses peripherals such as I2C, USART, CAN, DMA, and GPIO to communicate with sensors and other devices.
+This folder contains the application sources for an STM32F407-based telemetry node.
+The firmware is generated from STM32CubeMX and extended with FreeRTOS tasks that
+read an MPU6050 IMU and a GPS receiver, and publish the resulting telemetry over
+CAN and over a UART link to a host computer.
 
-## Project Structure
-- `main.c`: Entry point, system and peripheral initialization, main loop.
-- `i2c.c`, `usart.c`, `can.c`, `dma.c`, `gpio.c`: Peripheral drivers.
-- `stm32f4xx_it.c`: Interrupt handlers.
-- `syscalls.c`, `sysmem.c`, `system_stm32f4xx.c`: System support files.
+## Key modules
 
-## How to Build & Flash
-Use STM32CubeIDE or VS Code with appropriate tasks to build and flash the firmware.
+- `freertos.c` – FreeRTOS object creation and task logic (sensor acquisition,
+  GPS parsing, CAN/UART transmission).
+- `usart.c` – USART1 RX (GPS via DMA Receive-to-Idle) and USART2 TX (PC telemetry).
+- `can.c` – CAN1 peripheral setup plus helper to transmit standard frames.
+- `mpu6050.c` – Minimal MPU6050 driver to obtain linear acceleration, angular rate
+  and die temperature.
+- `main.c` – HAL initialisation sequence and scheduler start.
 
-## Configuration
-Hardware parameters are defined in `config.h`.
+## Data flow summary
 
-## Improvements
-- Modular code structure
-- Error handling stubs
-- Documentation and comments
-- Configuration header
-- Consistent code style
+1. **SensorTask** (100 Hz)
+   - Reads MPU6050 via I²C1.
+   - Sends two CAN frames (`0x100`, `0x101`).
+   - Enqueues a CSV line on the UART stream buffer.
+2. **GPSTask**
+   - Collects NMEA sentences from USART1 DMA into a stream buffer.
+   - Parses RMC/GGA sentences and, when a fix is valid, publishes CAN frames
+     (`0x120`, `0x121`) and a CSV line.
+3. **CanTxTask** drains the CAN queue and transmits frames with retry on transient
+   errors.
+4. **UartTxTask** pulls ASCII chunks from the UART stream buffer and writes them to
+   the PC via USART2 (115200-8N1).
+
+## Building
+
+Import the `Core/` folder into STM32CubeIDE (or regenerate a project with the same
+peripheral configuration) and build/flash with an ST-LINK probe. FreeRTOS heap and
+stack sizes assume the default CubeMX configuration.

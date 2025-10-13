@@ -25,7 +25,6 @@
 #include "can.h"
 
 /* USER CODE BEGIN 0 */
-#include "can.h"
 
 /* Added: include FreeRTOS headers so TickType_t, pdMS_TO_TICKS, xTaskGetTickCount
    and vTaskDelay are declared. This fixes the unknown type / implicit function errors. */
