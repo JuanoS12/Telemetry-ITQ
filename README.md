@@ -26,18 +26,39 @@ Core/
 
 ## Runtime architecture
 
-| Task            | Purpose                                                                 | Key interfaces                     |
-|-----------------|-------------------------------------------------------------------------|------------------------------------|
-| `SensorTask`    | Reads MPU6050 every 10 ms, packages CAN frames, publishes UART CSV line | I²C1, `Q_CAN_TX`, `SB_UART_TX`     |
-| `GPSTask`       | Consumes NMEA from DMA stream buffer, emits CAN frames & UART CSV       | USART1 RX DMA, `Q_CAN_TX`, `SB_GPS`, `SB_UART_TX` |
-| `CanTxTask`     | Sole CAN transmitter, drains `Q_CAN_TX` and retries on transient errors | CAN1                               |
-| `UartTxTask`    | Serialises buffered CSV chunks to the PC over USART2                    | USART2 TX, `SB_UART_TX`            |
-| `LedTask`       | Placeholder heartbeat/diagnostics                                       | GPIO                               |
+### FreeRTOS scheduling model
 
-Supporting buffers/queues:
-- `SB_GPS` (512 B, trigger = 32 B): GPS DMA feed from USART1 ISR to GPSTask.
-- `SB_UART_TX` (512 B, trigger = 32 B): Aggregated telemetry destined for the PC.
-- `Q_CAN_TX` (32 entries): Lossless arbitration between IMU and GPS publishers.
+The firmware runs with a 1 kHz RTOS tick (`configTICK_RATE_HZ = 1000`). Each task
+has a defined execution cadence, priority, and stack budget so the system can be
+analysed for timing closure:
+
+| Task          | Period / Trigger                               | Priority (CMSIS)          | Stack (bytes) | Responsibilities |
+|---------------|------------------------------------------------|---------------------------|---------------|------------------|
+| `SensorTask`  | 10 ms periodic (`vTaskDelayUntil`)              | `osPriorityAboveNormal1`  | 2048          | Polls MPU6050 at 100 Hz, fills two CAN frames (`0x100`/`0x101`) and a CSV line per sample. |
+| `GPSTask`     | Event driven when GPS stream buffer has bytes   | `osPriorityNormal`        | 3072          | Reassembles DMA-fed NMEA, validates fix quality, produces CAN frames (`0x120`/`0x121`) and CSV exports. |
+| `CanTxTask`   | Event driven when `Q_CAN_TX` provides a message | `osPriorityNormal1`       | 3072          | Sole CAN producer; retries `CAN1_SendStd` until HAL acknowledges the frame. |
+| `UartTxTask`  | Event driven when UART stream buffer has bytes  | `osPriorityBelowNormal`   | 1536          | Flushes CSV telemetry bursts to the PC on USART2 with blocking HAL writes. |
+| `LedTask`     | 1 ms delay placeholder                          | `osPriorityLow`           | 1024          | Reserved for future diagnostics; currently maintains stack for instrumentation. |
+
+Supporting communication primitives:
+
+- `SB_GPS` (512 B, trigger = 32 B): USART1 Receive-to-Idle DMA pushes raw bytes here; GPSTask drains it without busy waiting.
+- `SB_UART_TX` (512 B, trigger = 32 B): Aggregates CSV lines from IMU/GPS publishers and decouples them from the blocking TX task. Drops accumulate in `uart_drop_bytes`.
+- `Q_CAN_TX` (32 entries): Priority-neutral arbitration between IMU and GPS producers. `CAN_SendMessage` increments per-source drop counters on timeout.
+
+With these periods the CPU budget is dominated by the 10 ms IMU poll. The
+remaining tasks run only when data is available, keeping average utilisation low
+while guaranteeing deterministic CAN timing.
+
+### Fault detection and recovery
+
+- `CAN1_SendStd` retries for up to 5 ms before surfacing an error to the caller,
+  preventing permanent blockage if all mailboxes are temporarily busy.
+- GPS parsing clears fix/quality fields immediately when a sentence reports an
+  invalid solution so stale coordinates are never re-used.
+- UART stream-buffer overruns increment `uart_drop_bytes` for post-run analysis.
+- The USART1 Receive-to-Idle ISR re-arms DMA via `GPS_Start()` on init, idle, and
+  error callbacks to guarantee continuous GPS reception.
 
 ## Data interfaces
 
@@ -82,6 +103,10 @@ cppcheck --enable=all --inconclusive --std=c99 Core/Src Core/Inc
 > `cppcheck` reports "missing include" diagnostics for files such as
 > `stm32f4xx_hal.h`. These messages are expected and do not indicate functional
 > issues with the firmware sources.
+
+The automated **Cppcheck Static Analysis** workflow located at
+`.github/workflows/cppcheck.yml` runs the same command on every push and pull
+request to the main branches and publishes the `cppcheck_report.txt` artifact.
 
 Hardware-in-the-loop testing should confirm:
 - IMU frames on CAN IDs 0x100/0x101 and UART `IMU` lines at 100 Hz.
