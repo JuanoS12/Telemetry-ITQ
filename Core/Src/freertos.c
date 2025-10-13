@@ -32,7 +32,11 @@
 /* USER CODE BEGIN Includes */
 #include "queue.h"         // API de colas FreeRTOS
 #include "stream_buffer.h" // API de buffers de flujo FreeRTOS
+#include "usart.h"         // Handlers UART (huart2 para telemetría)
+#include "can.h"           // Prototipos y manejadores de CAN
+#include "mpu6050.h"       // Prototipos del driver de IMU
 #include <string.h>        // Funciones estándar de manejo de cadenas
+#include <stdio.h>         // snprintf para tramas UART
 #include <math.h>          // Funciones matemáticas
 #include <stdlib.h>        // Funciones estándar (atoi, atof)
 /* USER CODE END Includes */
@@ -77,6 +81,15 @@ static void GPS_ParseLine(const char* line, GPSFix* g){
       g->course_deg=(float)atof(f[8]);
       g->fix=1;
       g->tms=HAL_GetTick();
+    } else {
+      g->fix = 0;
+      g->lat_deg = 0.0;
+      g->lon_deg = 0.0;
+      g->speed_ms = 0.0f;
+      g->course_deg = 0.0f;
+      g->hdop = 0.0f;
+      g->sats = 0;
+      g->tms = HAL_GetTick();
     }
   } else if (!strncmp(line,"$GPGGA",6)||!strncmp(line,"$GNGGA",6)){
     char *f[16]={0};
@@ -87,9 +100,24 @@ static void GPS_ParseLine(const char* line, GPSFix* g){
     tmp[len] = '\0';
     char *p=tmp; int i=0;
     while(i<16 && (f[i]=strtok(i?NULL:p,","))) {i++; p=NULL;}
-    if (f[6]){ int q=atoi(f[6]); g->fix = (q>0)? (g->fix?g->fix:1):0; }
-    if (f[7]) g->sats=(uint8_t)atoi(f[7]);
-    if (f[8]) g->hdop=(float)atof(f[8]);
+    if (f[6]){
+      int q=atoi(f[6]);
+      if (q > 0){
+        g->fix = g->fix ? g->fix : 1;
+      } else {
+        g->fix = 0;
+      }
+    }
+    if (f[7]){
+      g->sats=(uint8_t)atoi(f[7]);
+    } else if (!g->fix){
+      g->sats = 0;
+    }
+    if (f[8]){
+      g->hdop=(float)atof(f[8]);
+    } else if (!g->fix){
+      g->hdop = 0.0f;
+    }
   }
 }
 
@@ -108,17 +136,15 @@ static BaseType_t CAN_SendMessage(QueueHandle_t queue, const CANMsg *msg, TickTy
 /* USER CODE BEGIN PD */
 // Colas y buffers globales para comunicación entre tareas
 QueueHandle_t Q_CAN_TX;
-StreamBufferHandle_t SB_GPS;   // buffer used by usart.c
+StreamBufferHandle_t SB_GPS;    // buffer used by usart.c
+StreamBufferHandle_t SB_UART_TX; // telemetría ASCII hacia PC
 static const TickType_t CAN_TX_TIMEOUT = pdMS_TO_TICKS(5); // Espera maxima antes de descartar
 static uint32_t can_tx_drop_imu = 0;  // Contador de descartes de IMU
 static uint32_t can_tx_drop_gps = 0;  // Contador de descartes de GPS
+static volatile uint32_t uart_drop_bytes = 0;  // Bytes que no cupieron en buffer UART
 
 
-// Estructura para muestras de IMU (acelerómetro, giroscopio, temperatura)
-typedef struct { 
-  float ax,ay,az,gx,gy,gz,tempC; // ax,ay,az: aceleraciones; gx,gy,gz: giros; tempC: temperatura
-  uint32_t tms;                  // timestamp en ms
-} IMUSample;
+// IMUSample se declara en mpu6050.h para compartir definición con el driver
 /* USER CODE END PD */
 
 /* ===========================
@@ -149,6 +175,12 @@ const osThreadAttr_t LedTask_attributes = {
   .stack_size = 256 * 4,
   .priority = (osPriority_t) osPriorityLow,
 };
+osThreadId_t UartTxTaskHandle;
+const osThreadAttr_t UartTxTask_attributes = {
+  .name = "UartTxTask",
+  .stack_size = 384 * 4,
+  .priority = (osPriority_t) osPriorityBelowNormal,
+};
 
 /* ===========================
    PROTOTIPOS DE FUNCIONES DE TAREA
@@ -157,6 +189,7 @@ void StartSensorTask(void *argument); // Tarea de adquisición de sensores (IMU)
 void StartGPSTask(void *argument);    // Tarea de procesamiento de GPS
 void StartCanTxTask(void *argument);  // Tarea de transmisión CAN
 void StartTask04(void *argument);     // Tarea de LED (indicador)
+void StartUartTxTask(void *argument); // Tarea de transmisión UART hacia PC
 
 /* ===========================
    INICIALIZACIÓN DE FREERTOS
@@ -171,10 +204,12 @@ void MX_FREERTOS_Init(void) {
   /* USER CODE END Init */
 
   /* USER CODE BEGIN RTOS_QUEUES */
-  Q_CAN_TX = xQueueCreate(32, sizeof(CANMsg));
-  SB_GPS   = xStreamBufferCreate(512, 32);
+  Q_CAN_TX   = xQueueCreate(32, sizeof(CANMsg));
+  SB_GPS     = xStreamBufferCreate(512, 32);
+  SB_UART_TX = xStreamBufferCreate(512, 32);
   configASSERT(Q_CAN_TX != NULL);
   configASSERT(SB_GPS != NULL);
+  configASSERT(SB_UART_TX != NULL);
   /* USER CODE END RTOS_QUEUES */
 
   /* Create tasks */
@@ -182,10 +217,10 @@ void MX_FREERTOS_Init(void) {
   GPSTaskHandle    = osThreadNew(StartGPSTask, NULL, &GPSTask_attributes);
   CanTxTaskHandle  = osThreadNew(StartCanTxTask, NULL, &CanTxTask_attributes);
   LedTaskHandle    = osThreadNew(StartTask04, NULL, &LedTask_attributes);
+  UartTxTaskHandle = osThreadNew(StartUartTxTask, NULL, &UartTxTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   // After creating SB_GPS we can start the GPS DMA safely
-  extern void GPS_Start(void); // implemented in usart.c
   GPS_Start();
   /* USER CODE END RTOS_THREADS */
 }
@@ -203,8 +238,17 @@ void MX_FREERTOS_Init(void) {
   * 2. Cada 10 ms (100 Hz) lee los datos de acelerómetro, giroscopio y temperatura.
   * 3. Empaqueta los datos en dos mensajes CAN y los envía a la cola Q_CAN_TX.
   */
-extern HAL_StatusTypeDef MPU6050_Init_200Hz(void);
-extern HAL_StatusTypeDef MPU6050_Read(IMUSample *s);
+static void UartPublish(const char *line, size_t len)
+{
+  if (SB_UART_TX == NULL || line == NULL || len == 0U) {
+    return;
+  }
+  size_t sent = xStreamBufferSend(SB_UART_TX, line, len, 0);
+  if (sent < len) {
+    uart_drop_bytes += (uint32_t)(len - sent);
+  }
+}
+
 void StartSensorTask(void *argument)
 {
   (void)argument;
@@ -226,6 +270,17 @@ void StartSensorTask(void *argument)
       // Segundo mensaje: giros + temperatura
       m.id=0x101; memcpy(&m.d[0],&gx,2); memcpy(&m.d[2],&gy,2); memcpy(&m.d[4],&gz,2); memcpy(&m.d[6],&tC,2);
       CAN_SendMessage(Q_CAN_TX, &m, CAN_TX_TIMEOUT, &can_tx_drop_imu);
+      // Telemetría por UART hacia PC en formato CSV con escalas enteras
+      char line[128];
+      int len = snprintf(line, sizeof(line),
+                         "IMU,%lu,%d,%d,%d,%d,%d,%d,%d\r\n",
+                         (unsigned long)s.tms,
+                         ax, ay, az,
+                         gx, gy, gz,
+                         tC);
+      if (len > 0) {
+        UartPublish(line, (size_t)len);
+      }
       ctr++;
     }
     vTaskDelayUntil(&t0, pdMS_TO_TICKS(10)); // Espera hasta el siguiente periodo (100 Hz)
@@ -269,6 +324,16 @@ void StartGPSTask(void *argument)
             int16_t v=lrintf(g.speed_ms*100), cr=lrintf(g.course_deg*100), hd=lrintf(g.hdop*100);
             m.id=0x121; memcpy(&m.d[0],&v,2); memcpy(&m.d[2],&cr,2); memcpy(&m.d[4],&hd,2); m.d[6]=g.fix; m.d[7]=g.sats;
             CAN_SendMessage(Q_CAN_TX, &m, CAN_TX_TIMEOUT, &can_tx_drop_gps);
+            char out[128];
+            int len = snprintf(out, sizeof(out),
+                               "GPS,%lu,%ld,%ld,%d,%d,%d,%u,%u\r\n",
+                               (unsigned long)g.tms,
+                               (long)lat, (long)lon,
+                               v, cr, hd,
+                               g.fix, g.sats);
+            if (len > 0) {
+              UartPublish(out, (size_t)len);
+            }
           }
         }
         ll=0; // Reinicia el buffer de línea
@@ -290,7 +355,6 @@ void StartGPSTask(void *argument)
 * 2. Cuando hay uno, lo transmite usando CAN1_SendStd.
 * 3. Si la transmisión falla, reintenta tras un pequeño delay.
 */
-extern HAL_StatusTypeDef CAN1_SendStd(uint16_t id, const uint8_t data[8]);
 void StartCanTxTask(void *argument)
 {
   (void)argument;
@@ -325,6 +389,18 @@ void StartTask04(void *argument)
     vTaskDelay(pdMS_TO_TICKS(1)); // Espera 1 ms (placeholder)
   }
   /* USER CODE END StartTask04 */
+}
+
+void StartUartTxTask(void *argument)
+{
+  (void)argument;
+  uint8_t chunk[128];
+  for(;;) {
+    size_t n = xStreamBufferReceive(SB_UART_TX, chunk, sizeof(chunk), portMAX_DELAY);
+    if (n > 0U) {
+      (void)HAL_UART_Transmit(&huart2, chunk, (uint16_t)n, HAL_MAX_DELAY);
+    }
+  }
 }
 
 /* ===========================

@@ -22,6 +22,8 @@
 #include "stm32f4xx_it.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include "usart.h"
+#include "can.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 /* USER CODE END Includes */
@@ -57,13 +59,7 @@
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
-extern DMA_HandleTypeDef hdma_usart1_rx;
-extern DMA_HandleTypeDef hdma_usart1_tx; // placeholder
-extern UART_HandleTypeDef huart1;
 /* USER CODE BEGIN EV */
-void CAN1_RX0_IRQHandler(void) { HAL_CAN_IRQHandler(&hcan1); }
-void CAN1_SCE_IRQHandler(void) { HAL_CAN_IRQHandler(&hcan1); }
-
 /* USER CODE END EV */
 
 /******************************************************************************/
@@ -215,8 +211,6 @@ void DMA2_Stream2_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
-/* External variables --------------------------------------------------------*/
-extern CAN_HandleTypeDef hcan1;
 
 /**
   * @brief This function handles CAN1 RX0 interrupt.
