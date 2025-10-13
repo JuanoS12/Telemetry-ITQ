@@ -22,6 +22,8 @@
 #include "stm32f4xx_it.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include "usart.h"
+#include "can.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 /* USER CODE END Includes */
@@ -57,10 +59,6 @@
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
-extern DMA_HandleTypeDef hdma_usart1_rx;
-extern DMA_HandleTypeDef hdma_usart1_tx; // placeholder
-extern UART_HandleTypeDef huart1;
-extern CAN_HandleTypeDef hcan1;
 /* USER CODE BEGIN EV */
 /* USER CODE END EV */
 
