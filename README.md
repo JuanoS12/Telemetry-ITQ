@@ -104,10 +104,6 @@ cppcheck --enable=all --inconclusive --std=c99 Core/Src Core/Inc
 > `stm32f4xx_hal.h`. These messages are expected and do not indicate functional
 > issues with the firmware sources.
 
-The automated **Cppcheck Static Analysis** workflow located at
-`.github/workflows/cppcheck.yml` runs the same command on every push and pull
-request to the main branches and publishes the `cppcheck_report.txt` artifact.
-
 Hardware-in-the-loop testing should confirm:
 - IMU frames on CAN IDs 0x100/0x101 and UART `IMU` lines at 100 Hz.
 - GPS frames on CAN IDs 0x120/0x121 and UART `GPS` lines when a fix is present.
