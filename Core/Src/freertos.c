@@ -100,6 +100,32 @@ static void GPS_ParseLine(const char* line, GPSFix* g){
     tmp[len] = '\0';
     char *p=tmp; int i=0;
     while(i<16 && (f[i]=strtok(i?NULL:p,","))) {i++; p=NULL;}
+    if (f[2] && f[2][0]=='A'){
+      g->lat_deg=dm2deg(atof(f[3])); if (f[4] && f[4][0]=='S') g->lat_deg=-g->lat_deg;
+      g->lon_deg=dm2deg(atof(f[5])); if (f[6] && f[6][0]=='W') g->lon_deg=-g->lon_deg;
+      g->speed_ms=(float)(atof(f[7])*0.514444f);
+      g->course_deg=(float)atof(f[8]);
+      g->fix=1;
+      g->tms=HAL_GetTick();
+    } else {
+      g->fix = 0;
+      g->lat_deg = 0.0;
+      g->lon_deg = 0.0;
+      g->speed_ms = 0.0f;
+      g->course_deg = 0.0f;
+      g->hdop = 0.0f;
+      g->sats = 0;
+      g->tms = HAL_GetTick();
+    }
+  } else if (!strncmp(line,"$GPGGA",6)||!strncmp(line,"$GNGGA",6)){
+    char *f[16]={0};
+    char tmp[128];
+    size_t len=0U;
+    while (len < sizeof(tmp)-1U && line[len] != '\0') { len++; }
+    memcpy(tmp, line, len);
+    tmp[len] = '\0';
+    char *p=tmp; int i=0;
+    while(i<16 && (f[i]=strtok(i?NULL:p,","))) {i++; p=NULL;}
     if (f[6]){
       int q=atoi(f[6]);
       if (q > 0){
@@ -389,6 +415,18 @@ void StartTask04(void *argument)
     vTaskDelay(pdMS_TO_TICKS(1)); // Espera 1 ms (placeholder)
   }
   /* USER CODE END StartTask04 */
+}
+
+void StartUartTxTask(void *argument)
+{
+  (void)argument;
+  uint8_t chunk[128];
+  for(;;) {
+    size_t n = xStreamBufferReceive(SB_UART_TX, chunk, sizeof(chunk), portMAX_DELAY);
+    if (n > 0U) {
+      (void)HAL_UART_Transmit(&huart2, chunk, (uint16_t)n, HAL_MAX_DELAY);
+    }
+  }
 }
 
 void StartUartTxTask(void *argument)
