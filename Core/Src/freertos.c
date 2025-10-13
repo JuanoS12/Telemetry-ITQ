@@ -80,6 +80,15 @@ static void GPS_ParseLine(const char* line, GPSFix* g){
       g->course_deg=(float)atof(f[8]);
       g->fix=1;
       g->tms=HAL_GetTick();
+    } else {
+      g->fix = 0;
+      g->lat_deg = 0.0;
+      g->lon_deg = 0.0;
+      g->speed_ms = 0.0f;
+      g->course_deg = 0.0f;
+      g->hdop = 0.0f;
+      g->sats = 0;
+      g->tms = HAL_GetTick();
     }
   } else if (!strncmp(line,"$GPGGA",6)||!strncmp(line,"$GNGGA",6)){
     char *f[16]={0};
@@ -90,9 +99,24 @@ static void GPS_ParseLine(const char* line, GPSFix* g){
     tmp[len] = '\0';
     char *p=tmp; int i=0;
     while(i<16 && (f[i]=strtok(i?NULL:p,","))) {i++; p=NULL;}
-    if (f[6]){ int q=atoi(f[6]); g->fix = (q>0)? (g->fix?g->fix:1):0; }
-    if (f[7]) g->sats=(uint8_t)atoi(f[7]);
-    if (f[8]) g->hdop=(float)atof(f[8]);
+    if (f[6]){
+      int q=atoi(f[6]);
+      if (q > 0){
+        g->fix = g->fix ? g->fix : 1;
+      } else {
+        g->fix = 0;
+      }
+    }
+    if (f[7]){
+      g->sats=(uint8_t)atoi(f[7]);
+    } else if (!g->fix){
+      g->sats = 0;
+    }
+    if (f[8]){
+      g->hdop=(float)atof(f[8]);
+    } else if (!g->fix){
+      g->hdop = 0.0f;
+    }
   }
 }
 

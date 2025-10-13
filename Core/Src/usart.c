@@ -40,6 +40,14 @@ static uint8_t gps_rx_buf[512];
 // Overruns counter for diagnostics (incremented in ISR when SB_GPS is full)
 static volatile uint32_t gps_stream_overruns_local = 0;
 
+static void GPS_RearmDma(void)
+{
+  if (HAL_UARTEx_ReceiveToIdle_DMA(&huart1, gps_rx_buf, sizeof(gps_rx_buf)) != HAL_OK) {
+    Error_Handler();
+  }
+  __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
+}
+
 /**
  * @brief Manejador de errores para USART.
  * 
@@ -308,12 +316,7 @@ void GPS_Start(void)
   configASSERT(SB_GPS != NULL);
 
   // Start HAL "Receive to Idle" using DMA. This fills gps_rx_buf and triggers HAL_UARTEx_RxEventCallback
-  if (HAL_UARTEx_ReceiveToIdle_DMA(&huart1, gps_rx_buf, sizeof(gps_rx_buf)) != HAL_OK) {
-    // If start fails, call error handler (could be temporary; consider retry logic)
-    Error_Handler();
-  }
-  // Disable half-transfer IRQ to rely only on Idle event (common pattern)
-  __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
+  GPS_RearmDma();
 }
 
 /**
@@ -331,8 +334,7 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
       gps_stream_overruns_local += (Size - sent);
     }
     // Re-arm reception for next packet
-    HAL_UARTEx_ReceiveToIdle_DMA(&huart1, gps_rx_buf, sizeof(gps_rx_buf));
-    __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
+    GPS_RearmDma();
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
   }
 }
@@ -344,8 +346,7 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART1) {
     // Try to recover reception: re-arm DMA receive-to-idle
-    HAL_UARTEx_ReceiveToIdle_DMA(&huart1, gps_rx_buf, sizeof(gps_rx_buf));
-    __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
+    GPS_RearmDma();
   }
 }
 
